@@ -259,3 +259,86 @@ logstash:
   environment:
     LS_JAVA_OPTS: "-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.port=18080 -Dcom.sun.management.jmxremote.rmi.port=18080 -Djava.rmi.server.hostname=DOCKER_HOST_IP -Dcom.sun.management.jmxremote.local.only=false"
 ```
+# Scaling out Elasticsearch
+
+This project supports a single-node Elasticsearch cluster by default. Following the instructions in this page, you will be able to scale out that cluster by adding extra nodes.
+
+![ES multi replicas](https://www.elastic.co/guide/en/elasticsearch/guide/master/images/elas_4404.png)
+
+*image source: [Elasticsearch: The Definitive Guide » Replica Shards](https://www.elastic.co/guide/en/elasticsearch/guide/master/replica-shards.html)*
+
+## Prerequisites
+
+### Increase `vm.max_map_count`
+
+One must increase the `vm.max_map_count` kernel setting on all Docker hosts running Elasticsearch in order to pass the [bootstrap checks](https://www.elastic.co/guide/en/elasticsearch/reference/current/bootstrap-checks.html) triggered by the production mode.
+To do this follow the recommended instructions from the Elastic documentation: [Install Elasticsearch with Docker](https://www.elastic.co/guide/en/elasticsearch/reference/current/docker.html#docker-cli-run-prod-mode)
+
+### Enable Zen discovery
+
+Use the [`zen`](https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-discovery-zen.html) discovery plugin instead of `single-node`, the default in the included [Elasticsearch configuration file](https://github.com/deviantony/docker-elk/blob/master/elasticsearch/config/elasticsearch.yml#L16). This can be changed whether directly in the configuration file or via an environment variable:
+
+Example:
+```yml
+# docker-compose.yml
+
+  elasticsearch:
+    environment:
+      # use 'zen' discovery plugin
+      discovery.type: zen
+```
+
+## Discovery
+
+Although the multicast plugin was [removed in Elasticsearch 5.2](https://www.elastic.co/guide/en/elasticsearch/reference/5.2/breaking_50_plugins.html#_multicast_plugin_removed), is still possible to leverage the Docker internal DNS together with the [unicast Zen discovery](https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-network.html) mechanism.
+
+For that, simply set the `discovery.zen.ping.unicast.hosts` Elasticsearch setting to the name of your Elasticsearch compose service, either via an environment variable or in the `elasticsearch.yml ` configuration file.
+
+Example:
+```yml
+# docker-compose.yml
+
+  elasticsearch:
+    environment:
+      # use internal Docker round-robin DNS for unicast discovery
+      discovery.zen.ping.unicast.hosts: elasticsearch
+```
+
+## Port mapping
+
+The default docker-compose file uses static host port mapping for the `elasticsearch` service. This prevents service outscaling because a single port can be mapped only once on the host. Instead, you have to either disable port mapping completely, or let Docker map container ports to random host ports in order to prevent clashes.
+
+Example:
+```yml
+# docker-compose.yml
+
+  elasticsearch:
+    ports:
+        # map to random host ports instead of static ports, eg. 32000:9200
+      - "9200"
+      - "9300"
+```
+
+## Scaling out
+
+Once the ELK stack is fully started, scale out the `elasticsearch` service:
+
+```
+❯ docker-compose scale elasticsearch=3
+Creating and starting elk_elasticsearch_2 ... done
+Creating and starting elk_elasticsearch_3 ... done
+```
+
+Your extra nodes should automatically join the current master:
+```
+❯ docker logs elk_elasticsearch_2 
+...
+[2017-03-14T15:51:08,123][INFO ][o.e.c.s.ClusterService   ] [hDXuwLj]
+  detected_master {IFnVp82}{IFnVp82CT--XfrPcrU-ndg}{xBfP-4jNTx2FXVLPlMzLLw}{172.18.0.2}{172.18.0.2:9300},
+  added {{8pF4rmm}{8pF4rmmoR4uk3pNTQuQ9qQ}{k__zZfnPTQa3-GMFD7_oAw}{172.18.0.6}{172.18.0.6:9300},{IFnVp82}{IFnVp82CT--XfrPcrU-ndg}{xBfP-4jNTx2FXVLPlMzLLw}{172.18.0.2}{172.18.0.2:9300},},
+  reason: zen-disco-receive(from master [master {IFnVp82}{IFnVp82CT--XfrPcrU-ndg}{xBfP-4jNTx2FXVLPlMzLLw}{172.18.0.2}{172.18.0.2:9300} committed version [39]])
+```
+
+If you're using the `x-pack` branch, all nodes will show up in Kibana's Monitoring app:
+
+![ES cluster Kibana](https://cloud.githubusercontent.com/assets/3299086/23909321/b2b339e8-08d6-11e7-9670-595a17ee9eb1.png)
